@@ -198,7 +198,9 @@
 
             var color = d3.scaleOrdinal(d3.schemeCategory10);
 
-            var parseDate = d3.timeParse("%Y-%m-%dT%H:%M:%SZ");
+            var parseDate = (date) => {
+                return new Date(date);
+            };
 
             var x = d3.scaleTime().range([0, width]),
                 x2 = d3.scaleTime().range([0, width]),
@@ -293,12 +295,12 @@
                     return d3.min(c.values, function(v) {
                         return v.temperature;
                     });
-                }),
+                }) - 1,
                 d3.max(sources, function(c) {
                     return d3.max(c.values, function(v) {
                         return v.temperature;
                     });
-                })
+                }) + 1
             ]);
             x2.domain(x.domain());
             y2.domain(y.domain());
