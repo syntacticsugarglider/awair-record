@@ -71,6 +71,7 @@
             padding-left: 8px;
             padding-right: 8px;
             color: var(--accent-color);
+            font-variant-numeric: tabular-nums;
             display: flex;
             flex-flow: row nowrap;
             justify-content: space-between;
@@ -115,265 +116,265 @@
     <div id="status">
         <div></div>
         <div>
-            <p id="connection-status">disconnected</p>
+            <p id="connection-status">connecting</p>
         </div>
     </div>
 
     <script src="https://d3js.org/d3.v4.min.js"></script>
 
     <script>
-        let domains = ["score"];
-
-        let socket = new WebSocket(`ws://${window.location.host}/data`);
+        let db = window.indexedDB.open("data", 1);
 
         let connectionStatus = document.getElementById('connection-status');
 
-        let data = localStorage.getItem('data');
-
-        let sync = false;
-
-        let on_update = () => {};
-
-        if (data) {
-            data = JSON.parse(data);
-        } else {
-            data = [];
-            sync = true;
+        var parseDate = (date) => {
+            return new Date(date);
         };
 
-        socket.onopen = () => {
-            connectionStatus.textContent = 'connected';
-            if (sync) {
-                socket.send('sync');
-            } else {
-                socket.send(`since ${data[data.length - 1].timestamp}`)
+        db.onerror = (e) => {
+            console.error(db.error);
+        }
+
+        db.onblocked = (e) => {
+            console.error(e);
+        }
+
+        let store;
+        let idb;
+
+        db.onsuccess = () => {
+            idb = db.result;
+
+            store_ready();
+        };
+
+        db.onupgradeneeded = (e) => {
+            idb = e.target.result;
+
+            idb.onerror = (e) => {
+                console.error(e);
             }
+
+            store = idb.createObjectStore('data', {
+                keyPath: 'date'
+            });
         };
 
-        socket.onclose = () => {
-            connectionStatus.textContent = 'disconnected';
+        load_data = () => {
+            return new Promise((resolve, reject) => {
+                connectionStatus.textContent = 'reading';
+                store = idb.transaction('data', 'readwrite').objectStore('data');
+                const request = store.getAll();
+                request.onerror = event => reject(event.target.error);
+                request.onsuccess = _ => resolve(request.result);
+            });
         };
 
-        socket.onmessage = (message) => {
-            let d = JSON.parse(message.data);
-            if (d.new_data) {
-                data.push(d.new_data);
-            } else if (d.sync) {
-                data = d.sync;
-                window.location.reload();
+        put_data = (data) => {
+            let promises = [];
+            let completion = 0;
+            for (let el of data) {
+                store = idb.transaction('data', 'readwrite').objectStore('data');
+                const request = store.put(el);
+                promises.push(new Promise((resolve, reject) => {
+                    request.onerror = event => reject(event.target.error);
+                    request.onsuccess = _ => {
+                        completion = completion + 1;
+                        resolve(request.result)
+                    };
+                }));
             }
-            data = data.filter((v, i, a) => a.findIndex(t => (t.timestamp === v.timestamp)) === i);
-            on_update();
-            localStorage.setItem('data', JSON.stringify(data));
-        };
+            frame = () => {
+                connectionStatus.textContent = `writing ${completion}/${promises.length} (wait!)`;
+                if (completion < promises.length) {
+                    requestAnimationFrame(frame);
+                } else {
+                    connectionStatus.textContent = 'connected';
+                }
+            };
+            requestAnimationFrame(frame);
+            return Promise.all(promises);
+        }
 
-        Date.prototype.addMonths = function(months) {
-            var dat = new Date(this.valueOf());
-            dat.setMonth(dat.getMonth() + months);
-            return dat;
-        };
+        store_ready = async() => {
+            let domains = ["score"];
 
-        resize = () => {
-            let wwidth = window.innerWidth;
-            let hheight = window.innerHeight;
+            let data = localStorage.getItem('data');
 
-            var myBrush;
-            var timerID;
-            var refreshChart;
-            var margin = {
-                    top: 40,
-                    right: 10,
-                    bottom: 160,
-                    left: 40
-                },
-                margin2 = {
-                    top: hheight - 160 + 40,
-                    right: 10,
-                    bottom: 40,
-                    left: 40
-                },
-                width = wwidth - margin.left - margin.right,
-                height = hheight - 8 - margin.top - margin.bottom,
-                height2 = hheight - margin2.top - margin2.bottom;
+            let sync = false;
 
-            var color = d3.scaleOrdinal(d3.schemeCategory10);
+            let on_update = () => {};
 
-            var parseDate = (date) => {
-                return new Date(date);
+            data = await load_data();
+
+            connectionStatus.textContent = 'connecting';
+
+            let socket = new WebSocket(`ws://${window.location.host}/data`);
+
+            if (data.length === 0) {
+                sync = true;
             };
 
-            var x = d3.scaleTime().range([0, width]),
-                x2 = d3.scaleTime().range([0, width]),
-                y = d3.scaleLinear().range([height, 0]),
-                y2 = d3.scaleLinear().range([height2, 0]);
-
-            d3.select("#liveData").on("click", () => {
-                if (d3.select("#liveData").node().checked) {
-                    timerID = window.setInterval(refreshChart, 1000);
+            socket.onopen = () => {
+                connectionStatus.textContent = 'connected';
+                if (sync) {
+                    socket.send('sync');
+                    connectionStatus.textContent = 'syncing (wait!)';
                 } else {
-                    window.clearInterval(timerID);
+                    socket.send(`since ${data[data.length - 1].timestamp}`)
                 }
-            });
+            };
 
-            var svg = d3
-                .select("body")
-                .append("svg")
-                .attr("width", width + margin.left + margin.right)
-                .attr("height", height + margin.top + margin.bottom);
+            socket.onclose = () => {
+                connectionStatus.textContent = 'disconnected';
+            };
 
-            svg
-                .append("defs")
-                .append("clipPath")
-                .attr("id", "clip")
-                .append("rect")
-                .attr("width", width)
-                .attr("height", height);
+            let writing = false;
 
-            var line = d3
-                .line()
-                .x(function(d) {
-                    return x(d.date);
-                })
-                .y(function(d) {
-                    return y(d.temperature);
-                })
-                .defined(function(d) {
-                    return !isNaN(d.temperature);
-                })
-                .curve(d3.curveLinear);
+            window.onbeforeunload = (e) => {
+                if (writing) {
+                    return 'please wait for cache write to finish or corruption may occur!';
+                }
+            };
 
-            var line2 = d3
-                .line()
-                .x(function(d) {
-                    return x2(d.date);
-                })
-                .y(function(d) {
-                    return y2(d.temperature);
-                })
-                .defined(function(d) {
-                    return !isNaN(d.temperature);
-                })
-                .curve(d3.curveLinear);
+            let message_cache = [];
 
-            var focus = svg
-                .append("g")
-                .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
-
-            var context = svg
-                .append("g")
-                .attr("transform", "translate(" + margin2.left + "," + margin2.top + ")");
-
-            color.domain(
-                d3.keys(data[0]).filter(function(key) {
-                    return domains.includes(key);
-                })
-            );
-
-            data.forEach(function(d) {
-                d.date = parseDate(d.timestamp);
-            });
-
-            var sources = color.domain().map(function(name) {
-                return {
-                    name: name,
-                    values: data.map(function(d) {
-                        return {
-                            date: d.date,
-                            temperature: +d[name]
-                        };
-                    })
-                };
-            });
-
-            x.domain(
-                d3.extent(data, function(d) {
-                    return d.date;
-                })
-            );
-            y.domain([
-                d3.min(sources, function(c) {
-                    return d3.min(c.values, function(v) {
-                        return v.temperature;
+            process_message = async(message) => {
+                if (writing) {
+                    message_cache.push(message);
+                    return;
+                }
+                let d = JSON.parse(message.data);
+                if (d.new_data) {
+                    writing = true;
+                    d.new_data.date = parseDate(d.new_data.timestamp);
+                    delete d.new_data.timestamp;
+                    data.push(d.new_data);
+                    await put_data([d.new_data]);
+                    writing = false;
+                } else if (d.sync) {
+                    writing = true;
+                    data = d.sync;
+                    data.forEach(function(d) {
+                        d.date = parseDate(d.timestamp);
+                        delete d.timestamp;
                     });
-                }) - 1,
-                d3.max(sources, function(c) {
-                    return d3.max(c.values, function(v) {
-                        return v.temperature;
-                    });
-                }) + 1
-            ]);
-            x2.domain(x.domain());
-            y2.domain(y.domain());
+                    on_update();
+                    document.querySelector('svg').remove();
+                    resize();
+                    await put_data(data);
+                    writing = false;
+                }
+                on_update();
 
-            var focuslineGroups = focus
-                .selectAll("g")
-                .data(sources)
-                .enter()
-                .append("g");
+                setTimeout(async() => {
+                    let message = message_cache.pop();
+                    if (message) {
+                        await process_message(message);
+                    }
+                    message_cache = [];
+                }, 0);
+            };
 
-            var focuslines = focuslineGroups
-                .append("path")
-                .attr("class", "line")
-                .attr("d", function(d) {
-                    return line(d.values);
-                })
-                .style("stroke", function(d) {
-                    return color(d.name);
-                })
-                .attr("clip-path", "url(#clip)");
+            socket.onmessage = process_message;
 
-            focus
-                .append("g")
-                .attr("class", "x axis")
-                .attr("transform", "translate(0," + height + ")")
-                .call(d3.axisBottom(x));
+            Date.prototype.addMonths = function(months) {
+                var dat = new Date(this.valueOf());
+                dat.setMonth(dat.getMonth() + months);
+                return dat;
+            };
 
-            focus
-                .append("g")
-                .attr("class", "y axis")
-                .call(d3.axisLeft(y));
+            function resize() {
+                let wwidth = window.innerWidth;
+                let hheight = window.innerHeight;
 
-            var contextlineGroups = context
-                .selectAll("g")
-                .data(sources)
-                .enter()
-                .append("g");
+                var myBrush;
+                var timerID;
+                var refreshChart;
+                var margin = {
+                        top: 40,
+                        right: 10,
+                        bottom: 160,
+                        left: 40
+                    },
+                    margin2 = {
+                        top: hheight - 160 + 40,
+                        right: 10,
+                        bottom: 40,
+                        left: 40
+                    },
+                    width = wwidth - margin.left - margin.right,
+                    height = hheight - 8 - margin.top - margin.bottom,
+                    height2 = hheight - margin2.top - margin2.bottom;
 
-            var contextLines = contextlineGroups
-                .append("path")
-                .attr("class", "line")
-                .attr("d", function(d) {
-                    return line2(d.values);
-                })
-                .style("stroke", function(d) {
-                    return color(d.name);
-                })
-                .attr("clip-path", "url(#clip)");
+                var color = d3.scaleOrdinal(d3.schemeCategory10);
 
-            context
-                .append("g")
-                .attr("class", "x axis2")
-                .attr("transform", "translate(0," + height2 + ")")
-                .call(d3.axisBottom(x2));
+                var x = d3.scaleTime().range([0, width]),
+                    x2 = d3.scaleTime().range([0, width]),
+                    y = d3.scaleLinear().range([height, 0]),
+                    y2 = d3.scaleLinear().range([height2, 0]);
 
-            myBrush = d3
-                .brushX()
-                .extent([
-                    [x.range()[0], 0],
-                    [x.range()[1], height2]
-                ])
-                .on("start brush end", brushed);
-
-            var begin = x2.range()[0];
-            var end = x2.range()[1];
-            context.append("g")
-                .attr("class", "x brush")
-                .call(myBrush);
-
-            on_update = function() {
-                data.forEach(function(d) {
-                    d.date = parseDate(d.timestamp);
+                d3.select("#liveData").on("click", () => {
+                    if (d3.select("#liveData").node().checked) {
+                        timerID = window.setInterval(refreshChart, 1000);
+                    } else {
+                        window.clearInterval(timerID);
+                    }
                 });
+
+                var svg = d3
+                    .select("body")
+                    .append("svg")
+                    .attr("width", width + margin.left + margin.right)
+                    .attr("height", height + margin.top + margin.bottom);
+
+                svg
+                    .append("defs")
+                    .append("clipPath")
+                    .attr("id", "clip")
+                    .append("rect")
+                    .attr("width", width)
+                    .attr("height", height);
+
+                var line = d3
+                    .line()
+                    .x(function(d) {
+                        return x(d.date);
+                    })
+                    .y(function(d) {
+                        return y(d.temperature);
+                    })
+                    .defined(function(d) {
+                        return !isNaN(d.temperature);
+                    })
+                    .curve(d3.curveLinear);
+
+                var line2 = d3
+                    .line()
+                    .x(function(d) {
+                        return x2(d.date);
+                    })
+                    .y(function(d) {
+                        return y2(d.temperature);
+                    })
+                    .defined(function(d) {
+                        return !isNaN(d.temperature);
+                    })
+                    .curve(d3.curveLinear);
+
+                var focus = svg
+                    .append("g")
+                    .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+                var context = svg
+                    .append("g")
+                    .attr("transform", "translate(" + margin2.left + "," + margin2.top + ")");
+
+                color.domain(
+                    d3.keys(data[0]).filter(function(key) {
+                        return domains.includes(key);
+                    })
+                );
 
                 var sources = color.domain().map(function(name) {
                     return {
@@ -387,19 +388,12 @@
                     };
                 });
 
-                x2.domain([
-                    d3.min(sources, function(c) {
-                        return d3.min(c.values, function(v) {
-                            return v.date;
-                        });
-                    }),
-                    d3.max(sources, function(c) {
-                        return d3.max(c.values, function(v) {
-                            return v.date;
-                        });
+                x.domain(
+                    d3.extent(data, function(d) {
+                        return d.date;
                     })
-                ]);
-                y2.domain([
+                );
+                y.domain([
                     d3.min(sources, function(c) {
                         return d3.min(c.values, function(v) {
                             return v.temperature;
@@ -411,83 +405,189 @@
                         });
                     }) + 1
                 ]);
-                var bs = d3.brushSelection(d3.select(".x.brush").node());
-                if (bs) {
-                    x.domain([x2.invert(bs[0]), x2.invert(bs[1])]);
-                } else {
-                    x.domain(x2.domain());
-                }
-                y.domain(y2.domain());
+                x2.domain(x.domain());
+                y2.domain(y.domain());
 
-                var updateFocusData = focus.selectAll("path.line").data(sources);
-                updateFocusData
+                var focuslineGroups = focus
+                    .selectAll("g")
+                    .data(sources)
                     .enter()
+                    .append("g");
+
+                var focuslines = focuslineGroups
                     .append("path")
                     .attr("class", "line")
-                    .style("stroke", function(d) {
-                        return color(d.name);
-                    })
-                    .attr("clip-path", "url(#clip)")
-                    .merge(updateFocusData)
                     .attr("d", function(d) {
                         return line(d.values);
-                    });
-
-                updateFocusData.exit().remove();
-
-                var updateContextData = context.selectAll("path.line").data(sources);
-                updateContextData
-                    .enter()
-                    .append("path")
-                    .attr("class", "line")
+                    })
                     .style("stroke", function(d) {
                         return color(d.name);
                     })
-                    .attr("clip-path", "url(#clip)")
-                    .merge(updateContextData)
+                    .attr("clip-path", "url(#clip)");
+
+                focus
+                    .append("g")
+                    .attr("class", "x axis")
+                    .attr("transform", "translate(0," + height + ")")
+                    .call(d3.axisBottom(x));
+
+                focus
+                    .append("g")
+                    .attr("class", "y axis")
+                    .call(d3.axisLeft(y));
+
+                var contextlineGroups = context
+                    .selectAll("g")
+                    .data(sources)
+                    .enter()
+                    .append("g");
+
+                var contextLines = contextlineGroups
+                    .append("path")
+                    .attr("class", "line")
                     .attr("d", function(d) {
                         return line2(d.values);
+                    })
+                    .style("stroke", function(d) {
+                        return color(d.name);
+                    })
+                    .attr("clip-path", "url(#clip)");
+
+                context
+                    .append("g")
+                    .attr("class", "x axis2")
+                    .attr("transform", "translate(0," + height2 + ")")
+                    .call(d3.axisBottom(x2));
+
+                myBrush = d3
+                    .brushX()
+                    .extent([
+                        [x.range()[0], 0],
+                        [x.range()[1], height2]
+                    ])
+                    .on("start brush end", brushed);
+
+                var begin = x2.range()[0];
+                var end = x2.range()[1];
+                context.append("g")
+                    .attr("class", "x brush")
+                    .call(myBrush);
+
+                on_update = function() {
+                    var sources = color.domain().map(function(name) {
+                        return {
+                            name: name,
+                            values: data.map(function(d) {
+                                return {
+                                    date: d.date,
+                                    temperature: +d[name]
+                                };
+                            })
+                        };
                     });
 
-                updateContextData.exit().remove();
+                    x2.domain([
+                        d3.min(sources, function(c) {
+                            return d3.min(c.values, function(v) {
+                                return v.date;
+                            });
+                        }),
+                        d3.max(sources, function(c) {
+                            return d3.max(c.values, function(v) {
+                                return v.date;
+                            });
+                        })
+                    ]);
+                    y2.domain([
+                        d3.min(sources, function(c) {
+                            return d3.min(c.values, function(v) {
+                                return v.temperature;
+                            });
+                        }) - 1,
+                        d3.max(sources, function(c) {
+                            return d3.max(c.values, function(v) {
+                                return v.temperature;
+                            });
+                        }) + 1
+                    ]);
+                    var bs = d3.brushSelection(d3.select(".x.brush").node());
+                    if (bs) {
+                        x.domain([x2.invert(bs[0]), x2.invert(bs[1])]);
+                    } else {
+                        x.domain(x2.domain());
+                    }
+                    y.domain(y2.domain());
 
-                focus.select(".x.axis").call(d3.axisBottom(x));
-                focus.select(".y.axis").call(d3.axisLeft(y));
-                context.select(".x.axis2").call(d3.axisBottom(x2));
+                    var updateFocusData = focus.selectAll("path.line").data(sources);
+                    updateFocusData
+                        .enter()
+                        .append("path")
+                        .attr("class", "line")
+                        .style("stroke", function(d) {
+                            return color(d.name);
+                        })
+                        .attr("clip-path", "url(#clip)")
+                        .merge(updateFocusData)
+                        .attr("d", function(d) {
+                            return line(d.values);
+                        });
+
+                    updateFocusData.exit().remove();
+
+                    var updateContextData = context.selectAll("path.line").data(sources);
+                    updateContextData
+                        .enter()
+                        .append("path")
+                        .attr("class", "line")
+                        .style("stroke", function(d) {
+                            return color(d.name);
+                        })
+                        .attr("clip-path", "url(#clip)")
+                        .merge(updateContextData)
+                        .attr("d", function(d) {
+                            return line2(d.values);
+                        });
+
+                    updateContextData.exit().remove();
+
+                    focus.select(".x.axis").call(d3.axisBottom(x));
+                    focus.select(".y.axis").call(d3.axisLeft(y));
+                    context.select(".x.axis2").call(d3.axisBottom(x2));
+                };
+
+                function brushed() {
+                    var s = d3.event.selection;
+
+                    x.domain(
+                        d3.event.selection === null ?
+                        x2.domain() : [x2.invert(s[0]), x2.invert(s[1])]
+                    );
+
+                    focus.selectAll("path.line").attr("d", function(d) {
+                        return line(d.values);
+                    });
+                    focus.select(".x.axis").call(d3.axisBottom(x));
+                    focus.select(".y.axis").call(d3.axisLeft(y));
+                }
             };
 
-            function brushed() {
-                var s = d3.event.selection;
-
-                x.domain(
-                    d3.event.selection === null ?
-                    x2.domain() : [x2.invert(s[0]), x2.invert(s[1])]
-                );
-
-                focus.selectAll("path.line").attr("d", function(d) {
-                    return line(d.values);
-                });
-                focus.select(".x.axis").call(d3.axisBottom(x));
-                focus.select(".y.axis").call(d3.axisLeft(y));
+            const debounce = (callback, wait) => {
+                let timeoutId = null;
+                return (...args) => {
+                    window.clearTimeout(timeoutId);
+                    timeoutId = window.setTimeout(() => {
+                        callback.apply(null, args);
+                    }, wait);
+                };
             }
-        };
 
-        const debounce = (callback, wait) => {
-            let timeoutId = null;
-            return (...args) => {
-                window.clearTimeout(timeoutId);
-                timeoutId = window.setTimeout(() => {
-                    callback.apply(null, args);
-                }, wait);
-            };
-        }
+            window.onresize = debounce(() => {
+                document.querySelector('svg').remove();
+                resize();
+            }, 100);
 
-        window.onresize = debounce(() => {
-            document.querySelector('svg').remove();
             resize();
-        }, 100);
-
-        resize();
+        }
     </script>
 </body>
 
